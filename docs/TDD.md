@@ -332,3 +332,23 @@ backend/
 │   ├── auth/
 │   └── database/
 └── requirements.txt
+## 17. Security Scopes and Permissions
+
+The system will use permission-based authorization along with Role-Based Access Control (RBAC).
+
+### Admin Permissions
+- users:read
+- users:write
+- requests:read
+- requests:assign
+- requests:update
+
+### Resident/Student Permissions
+- requests:create
+- requests:read:own
+- requests:update:own
+
+### Maintenance Staff Permissions
+- requests:read:assigned
+- requests:update:assigned
+- requests:status:update
