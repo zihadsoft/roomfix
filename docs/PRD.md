@@ -59,3 +59,35 @@ Students and residents often report maintenance problems through informal commun
 
 ## 8. Project Goal
 The goal of RoomFix is to demonstrate the development of a complete, secure, and well-structured web application using React.js with TypeScript and FastAPI with Python.
+## 9. Project Milestones
+
+### Release 1: MVP (Midterm Demo)
+
+Goal: Develop the core maintenance request management features and run the application locally.
+
+Tasks:
+
+* Set up the React + TypeScript frontend.
+* Set up the FastAPI + Python backend.
+* Create and view maintenance requests.
+* Update and delete maintenance requests.
+* Implement basic request status tracking.
+* Test the core REST API endpoints locally.
+
+Expected Result: Users can manage basic maintenance requests through the application and its REST APIs.
+
+### Release 2: Beta (Final Demo)
+
+Goal: Improve security, user management, and deployment readiness.
+
+Tasks:
+
+* Implement user authentication and login.
+* Implement role-based access control (RBAC).
+* Support Admin, Manager, and Resident roles.
+* Protect restricted API endpoints using authentication and permissions.
+* Develop a user profile dashboard.
+* Test API security and access permissions.
+* Prepare the application for deployment.
+
+Expected Result: A more secure maintenance request management system with authentication, role-based permissions, and deployment readiness.
