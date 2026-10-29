@@ -352,3 +352,80 @@ The system will use permission-based authorization along with Role-Based Access 
 - requests:read:assigned
 - requests:update:assigned
 - requests:status:update
+
+
+## 18. Deployment and Configuration
+
+### 18.1 Environment Configuration
+
+The application uses environment variables to configure the backend, database connection, authentication, and frontend integration.
+
+Configuration includes:
+- Database connection URL.
+- JWT secret key and token expiration settings.
+- CORS allowed origins.
+- Frontend API base URL.
+
+Sensitive values must be stored in environment variables and must not be committed to the GitHub repository.
+
+### 18.2 Backend Setup
+
+The backend is developed using FastAPI and Python.
+
+Setup steps:
+1. Navigate to the backend directory.
+2. Create and activate a Python virtual environment.
+3. Install dependencies from requirements.txt.
+4. Configure the required environment variables.
+5. Start the FastAPI development server.
+
+Example commands on Windows:
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
+### 18.3 API Documentation
+
+FastAPI provides interactive API documentation through Swagger UI.
+
+When the backend is running locally, the documentation is available at:
+
+http://127.0.0.1:8000/docs
+
+The API documentation can be used to inspect endpoints and test requests.
+
+### 18.4 Frontend Setup
+
+The frontend uses React.js and TypeScript.
+
+Setup steps:
+1. Navigate to the frontend directory.
+2. Install the dependencies using npm.
+3. Configure the frontend API base URL.
+4. Start the development server.
+
+Example commands, if the frontend contains a package.json file:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### 18.5 Production Deployment
+
+The frontend can be deployed using a compatible hosting platform such as Vercel. The backend must be deployed to a Python-compatible hosting environment.
+
+Before deployment:
+- Configure production environment variables.
+- Set the correct backend API URL in the frontend.
+- Configure CORS for the deployed frontend domain.
+- Verify database connectivity and authentication.
+- Test protected API endpoints and role-based permissions.
+
+Deployment credentials and secret keys must never be included in source control.

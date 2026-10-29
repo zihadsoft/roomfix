@@ -137,3 +137,44 @@ The backend shall provide REST APIs for:
 - Request status updates
 
 All protected APIs shall verify authentication and required permissions before processing requests.
+
+## 9. Use Cases
+
+### UC-01: User Login
+- Actor: Admin, Resident/Student, Maintenance Staff
+- The user enters their email and password.
+- The system validates the credentials and grants access if valid.
+- Invalid credentials result in an error message.
+
+### UC-02: Create Maintenance Request
+- Actor: Resident/Student
+- The user enters the request title, description, location, and priority.
+- The system validates the information and creates the request.
+- The system confirms successful submission.
+
+### UC-03: Assign Maintenance Request
+- Actor: Admin
+- The admin selects a maintenance request and assigns it to maintenance staff.
+- The system saves the assignment and updates the request information.
+
+### UC-04: Update Request Status
+- Actor: Maintenance Staff
+- The staff member updates the status of an assigned request.
+- The system saves the new status for authorized users to view.
+
+### UC-05: Manage Users
+- Actor: Admin
+- The admin views and manages user accounts and roles.
+- The system allows only authorized administrators to perform these actions.
+
+## 10. Acceptance Criteria
+
+- Users can log in with valid credentials.
+- Invalid login attempts are rejected with an appropriate error message.
+- Residents/Students can create maintenance requests with required information.
+- Users can view requests according to their roles and permissions.
+- Admins can assign maintenance requests to maintenance staff.
+- Maintenance staff can update the status of assigned requests.
+- Unauthorized users cannot access protected API endpoints.
+- The system validates required fields and displays appropriate error messages.
+- The REST API endpoints return appropriate responses for successful and failed requests.
