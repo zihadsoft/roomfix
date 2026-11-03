@@ -1,0 +1,8 @@
+RoomFix urgent SRS-focused update
+Implemented: registration, JWT login, maintenance request creation/listing, admin assignment, staff status changes, admin user role update, React UI.
+Limitations: SQLite remains (SRS requires PostgreSQL); SQLAlchemy, React Router, Axios, security scopes not implemented. Development-only credentials and secret must be replaced for production.
+Run from project root: python -m pip install -r backend/requirements.txt ; python -m uvicorn backend.main:app --reload
+Frontend: cd frontend ; npm install ; npm run dev
+Demo users: admin@roomfix.com / admin123 ; resident@roomfix.com / resident123 ; staff@roomfix.com / staff123
+These are local development accounts only.
+No end-to-end execution verified in this environment.

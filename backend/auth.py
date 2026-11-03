@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+import os
 import jwt
 from pwdlib import PasswordHash
 
-SECRET_KEY = "roomfix-secret-key"
+SECRET_KEY = os.environ.get("ROOMFIX_SECRET_KEY", "roomfix-local-development-only-change-me")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

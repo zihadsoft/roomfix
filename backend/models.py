@@ -7,6 +7,7 @@ class UserRole(str, Enum):
     admin = "admin"
     manager = "manager"
     resident = "resident"
+    maintenance_staff = "maintenance_staff"
 
 
 class User(BaseModel):
