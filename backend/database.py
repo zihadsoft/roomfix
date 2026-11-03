@@ -29,6 +29,16 @@ def init_db():
             )
         """)
 
+        conn.execute("""CREATE TABLE IF NOT EXISTS maintenance_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL, description TEXT NOT NULL, location TEXT NOT NULL,
+            priority TEXT NOT NULL CHECK(priority IN ('low','medium','high')),
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','assigned','in_progress','completed','rejected')),
+            created_by INTEGER NOT NULL REFERENCES users(id),
+            assigned_staff INTEGER REFERENCES users(id),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
         conn.commit()
     finally:
         conn.close()
@@ -43,6 +53,7 @@ def seed_db():
             ("Admin User", "admin@roomfix.com", "admin123", "admin"),
             ("Manager User", "manager@roomfix.com", "manager123", "manager"),
             ("Resident User", "resident@roomfix.com", "resident123", "resident"),
+            ("Maintenance Staff", "staff@roomfix.com", "staff123", "maintenance_staff"),
         ]
 
         for name, email, password, role in users:
