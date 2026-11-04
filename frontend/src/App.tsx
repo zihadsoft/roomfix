@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 
-const API = 'http://127.0.0.1:8000'
+const API = ''
 type Session = { access_token:string; name:string; role:string }
 type Ticket = { id:number; title:string; description:string; location:string; priority:string; status:string; created_by:number; assigned_staff:number|null }
 type Staff = {id:number;name:string;email:string}
