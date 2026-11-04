@@ -1,7 +1,6 @@
 import { useState, type FormEvent, type CSSProperties } from 'react'
 
-// Vercel same-domain API routing
-const API = ''
+const API = import.meta.env.VITE_API_URL || window.location.origin
 
 type Session = {
   access_token: string
@@ -39,25 +38,29 @@ export default function App() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
 
   const [register, setRegister] = useState(false)
-  const [showPassword, setShowPassword] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
 
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [staff, setStaff] = useState<Staff[]>([])
   const [users, setUsers] = useState<Person[]>([])
 
   const [message, setMessage] = useState('')
+  const [messageType, setMessageType] = useState('')
+
+  const [loadingAction, setLoadingAction] = useState<string | null>(null)
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [location, setLocation] = useState('')
   const [priority, setPriority] = useState('medium')
 
-  // ==========================================
-  // API REQUEST FUNCTION
-  // ==========================================
+  const [selectedStaff, setSelectedStaff] = useState<Record<number, string>>({})
+
+  // ==============================
+  // API REQUEST
+  // ==============================
 
   async function request(
     path: string,
@@ -77,7 +80,7 @@ export default function App() {
     const data = await res.json().catch(() => ({}))
 
     if (!res.ok) {
-      throw Error(
+      throw new Error(
         typeof data.detail === 'string'
           ? data.detail
           : JSON.stringify(data.detail || 'Request failed')
@@ -87,9 +90,9 @@ export default function App() {
     return data
   }
 
-  // ==========================================
-  // REFRESH DASHBOARD DATA
-  // ==========================================
+  // ==============================
+  // REFRESH DATA
+  // ==============================
 
   async function refresh(
     token = session?.access_token,
@@ -97,101 +100,208 @@ export default function App() {
   ) {
     if (!token) return
 
-    const t = await request('/api/requests', 'GET', undefined, token)
-    setTickets(t)
+    const data = await request('/api/requests', 'GET', undefined, token)
+    setTickets(data)
 
     if (role === 'admin') {
-      setStaff(await request('/api/staff', 'GET', undefined, token))
-      setUsers(await request('/api/users', 'GET', undefined, token))
+      const [staffData, userData] = await Promise.all([
+        request('/api/staff', 'GET', undefined, token),
+        request('/api/users', 'GET', undefined, token)
+      ])
+
+      setStaff(staffData)
+      setUsers(userData)
     }
   }
 
-  // ==========================================
-  // LOGIN AND REGISTRATION
-  // ==========================================
+  // ==============================
+  // UNIVERSAL LOADING SYSTEM
+  // ==============================
 
-  async function login(e: FormEvent) {
-    e.preventDefault()
+  async function runAction(
+    key: string,
+    task: () => Promise<void>,
+    successText = 'Successfully Updated!'
+  ) {
+    if (loadingAction !== null) return
 
-    if (isSubmitting) return
-
+    setLoadingAction(key)
     setMessage('')
-    setIsSubmitting(true)
+    setMessageType('')
 
     try {
-      if (register) {
-        await request('/api/register', 'POST', {
-          name,
+      await task()
+
+      setMessage(successText)
+      setMessageType('success')
+
+    } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : 'Unknown error'
+
+      setMessage(`Operation Failed! ${reason}`)
+      setMessageType('error')
+
+    } finally {
+      setLoadingAction(null)
+    }
+  }
+
+  function isLoading(key: string) {
+    return loadingAction === key
+  }
+
+  // ==============================
+  // LOGIN / REGISTRATION
+  // ==============================
+
+  async function login(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+
+    await runAction(
+      'login',
+      async () => {
+        if (register) {
+          await request('/api/register', 'POST', {
+            name,
+            email,
+            password
+          })
+
+          setRegister(false)
+          setPassword('')
+          setName('')
+          return
+        }
+
+        const data = await request('/api/login', 'POST', {
           email,
           password
         })
 
-        setRegister(false)
+        setSession(data)
         setPassword('')
-        setShowPassword(false)
-        setMessage('Registered successfully! Please log in.')
-        return
-      }
 
-      const data = await request('/api/login', 'POST', {
-        email,
-        password
-      })
-
-      setSession(data)
-      setPassword('')
-      setShowPassword(false)
-
-      await refresh(data.access_token, data.role)
-
-    } catch (err) {
-      setMessage(
-        err instanceof Error ? err.message : String(err)
-      )
-    } finally {
-      setIsSubmitting(false)
-    }
+        await refresh(data.access_token, data.role)
+      },
+      register
+        ? 'Registration Successful! Please Login.'
+        : 'Login Successful!'
+    )
   }
 
-  // ==========================================
-  // GENERAL ACTION FUNCTION
-  // ==========================================
-
-  async function act(
-    path: string,
-    method: string,
-    body: object
-  ) {
-    try {
-      await request(path, method, body)
-
-      setMessage('Saved successfully!')
-      await refresh()
-
-    } catch (e) {
-      setMessage(
-        e instanceof Error ? e.message : String(e)
-      )
-    }
-  }
-
-  // ==========================================
+  // ==============================
   // LOGOUT
-  // ==========================================
+  // ==============================
 
   function logout() {
-    setSession(null)
-    setTickets([])
-    setUsers([])
-    setStaff([])
-    setPassword('')
-    setShowPassword(false)
-    setMessage('')
+    void runAction('logout', async () => {
+      setSession(null)
+      setTickets([])
+      setStaff([])
+      setUsers([])
+      setPassword('')
+    }, 'Logged Out Successfully!')
   }
 
-  // ==========================================
-  // DESIGN STYLES
-  // ==========================================
+  // ==============================
+  // SUBMIT MAINTENANCE REQUEST
+  // ==============================
+
+  async function submitRequest(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+
+    await runAction(
+      'submit-request',
+      async () => {
+        await request('/api/requests', 'POST', {
+          title,
+          description,
+          location,
+          priority
+        })
+
+        setTitle('')
+        setDescription('')
+        setLocation('')
+
+        await refresh()
+      },
+      'Request Submitted Successfully!'
+    )
+  }
+
+  // ==============================
+  // ASSIGN STAFF
+  // ==============================
+
+  async function assignStaff(ticketId: number) {
+    const staffId = selectedStaff[ticketId]
+
+    if (!staffId) {
+      setMessage('Please select maintenance staff first!')
+      setMessageType('error')
+      return
+    }
+
+    await runAction(
+      `assign-${ticketId}`,
+      async () => {
+        await request(
+          `/api/requests/${ticketId}/assign`,
+          'PUT',
+          { staff_id: Number(staffId) }
+        )
+
+        await refresh()
+      },
+      'Staff Assigned Successfully!'
+    )
+  }
+
+  // ==============================
+  // UPDATE REQUEST STATUS
+  // ==============================
+
+  async function updateStatus(ticketId: number, status: string) {
+    await runAction(
+      `status-${ticketId}-${status}`,
+      async () => {
+        await request(
+          `/api/requests/${ticketId}/status`,
+          'PUT',
+          { status }
+        )
+
+        await refresh()
+      },
+      `Request Status Updated Successfully!`
+    )
+  }
+
+  // ==============================
+  // CHANGE USER ROLE
+  // ==============================
+
+  async function changeRole(userId: number, role: string) {
+    await runAction(
+      `role-${userId}`,
+      async () => {
+        await request(
+          `/api/users/${userId}/role`,
+          'PUT',
+          { role }
+        )
+
+        await refresh()
+      },
+      'User Role Updated Successfully!'
+    )
+  }
+
+  // ==============================
+  // COMMON STYLES
+  // ==============================
 
   const field: CSSProperties = {
     padding: 12,
@@ -201,76 +311,194 @@ export default function App() {
     color: '#111827',
     width: '100%',
     boxSizing: 'border-box',
-    fontSize: 15,
-    outline: 'none'
+    fontSize: 15
   }
 
   const btn: CSSProperties = {
-    padding: '12px 17px',
+    padding: '12px 18px',
     background: '#2563eb',
-    color: 'white',
+    color: '#ffffff',
     border: 0,
     borderRadius: 8,
     cursor: 'pointer',
-    fontSize: 15,
-    fontWeight: 600,
-    transition: '0.2s'
+    fontWeight: 700,
+    fontSize: 14,
+    transition: 'all 0.2s ease'
   }
 
   const panel: CSSProperties = {
     background: '#1e293b',
     padding: 20,
-    borderRadius: 12,
+    borderRadius: 14,
     margin: '16px 0',
-    boxShadow: '0 5px 15px rgba(0,0,0,0.15)'
+    border: '1px solid #334155'
   }
 
-  // ==========================================
-  // MAIN APPLICATION
-  // ==========================================
+  // ==============================
+  // STATUS COLOR
+  // ==============================
+
+  function statusStyle(status: string): CSSProperties {
+    const colors: Record<string, CSSProperties> = {
+      pending: {
+        background: '#854d0e',
+        color: '#fef08a'
+      },
+      completed: {
+        background: '#166534',
+        color: '#bbf7d0'
+      },
+      rejected: {
+        background: '#991b1b',
+        color: '#fecaca'
+      },
+      assigned: {
+        background: '#1e40af',
+        color: '#bfdbfe'
+      },
+      in_progress: {
+        background: '#075985',
+        color: '#bae6fd'
+      }
+    }
+
+    return {
+      display: 'inline-block',
+      padding: '6px 12px',
+      borderRadius: 20,
+      fontSize: 12,
+      fontWeight: 800,
+      ...colors[status]
+    }
+  }
+
+  function actionButton(
+    key: string,
+    label: string,
+    onClick: () => void,
+    background = '#2563eb'
+  ) {
+    return (
+      <button
+        type="button"
+        className={`action-btn ${isLoading(key) ? 'is-loading' : ''}`}
+        style={{ ...btn, background }}
+        onClick={onClick}
+        disabled={loadingAction !== null}
+      >
+        {isLoading(key) ? (
+          <span className="loading-content">
+            <span className="spinner" />
+            Loading...
+          </span>
+        ) : label}
+      </button>
+    )
+  }
+
+  // ==============================
+  // MAIN UI
+  // ==============================
 
   return (
-    <main
-      style={{
-        background: '#0f172a',
-        color: 'white',
-        minHeight: '100vh',
-        fontFamily: 'Arial, sans-serif',
-        padding: '25px 16px'
-      }}
-    >
-
+    <main className="app-main">
       <style>{`
-        @keyframes loginBlink {
+        * {
+          box-sizing: border-box;
+        }
+
+        .app-main {
+          background: #0f172a;
+          color: white;
+          min-height: 100vh;
+          font-family: Arial, sans-serif;
+          padding: 25px 16px;
+        }
+
+        .app-container {
+          max-width: 950px;
+          margin: auto;
+        }
+
+        .action-btn {
+          position: relative;
+          overflow: hidden;
+          transition: all 0.2s ease;
+        }
+
+        .action-btn:hover:not(:disabled) {
+          filter: brightness(1.18);
+          transform: translateY(-2px);
+          box-shadow: 0 5px 15px #0005;
+        }
+
+        .action-btn:active:not(:disabled) {
+          transform: scale(0.97);
+        }
+
+        .action-btn:disabled {
+          cursor: not-allowed;
+          opacity: 0.8;
+        }
+
+        .action-btn.is-loading {
+          animation: buttonBlink 0.7s infinite;
+        }
+
+        @keyframes buttonBlink {
           0%, 100% {
             opacity: 1;
             filter: brightness(1);
           }
-
           50% {
             opacity: 0.55;
-            filter: brightness(1.3);
+            filter: brightness(1.5);
           }
         }
 
-        .login-blink {
-          animation: loginBlink 0.7s infinite;
+        .loading-content {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 9px;
         }
 
-        .rf-button:hover {
-          filter: brightness(1.15);
+        .spinner {
+          display: inline-block;
+          width: 15px;
+          height: 15px;
+          border: 2px solid #ffffff70;
+          border-top-color: white;
+          border-radius: 50%;
+          animation: spin 0.7s linear infinite;
         }
 
-        .rf-input:focus {
-          border-color: #3b82f6 !important;
-          box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+        @keyframes spin {
+          to { transform: rotate(360deg); }
         }
 
-        .rf-card {
-          animation: cardAppear 0.3s ease;
+        .feedback {
+          padding: 15px;
+          border-radius: 9px;
+          margin-top: 18px;
+          font-weight: 700;
+          animation: feedbackIn 0.3s ease;
+          overflow-wrap: anywhere;
         }
 
-        @keyframes cardAppear {
+        .feedback.success {
+          background: #14532d;
+          color: #bbf7d0;
+          border: 1px solid #22c55e;
+        }
+
+        .feedback.error {
+          background: #7f1d1d;
+          color: #fecaca;
+          border: 1px solid #ef4444;
+        }
+
+        @keyframes feedbackIn {
           from {
             opacity: 0;
             transform: translateY(8px);
@@ -280,52 +508,69 @@ export default function App() {
             transform: translateY(0);
           }
         }
+
+        .ticket-card {
+          background: #0f172a;
+          border: 1px solid #475569;
+          border-radius: 12px;
+          padding: 17px;
+          margin: 14px 0;
+          overflow-wrap: anywhere;
+        }
+
+        .ticket-actions {
+          display: flex;
+          gap: 9px;
+          flex-wrap: wrap;
+          margin-top: 15px;
+        }
+
+        .user-row {
+          padding: 12px 5px;
+          border-bottom: 1px solid #475569;
+          display: flex;
+          gap: 12px;
+          align-items: center;
+          justify-content: space-between;
+          flex-wrap: wrap;
+        }
+
+        @media (max-width: 600px) {
+          .app-main {
+            padding: 15px 10px;
+          }
+
+          .ticket-actions button {
+            flex: 1;
+            min-width: 100px;
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .action-btn.is-loading,
+          .spinner,
+          .feedback {
+            animation-duration: 2s;
+          }
+        }
       `}</style>
 
-      <div style={{ maxWidth: 950, margin: 'auto' }}>
+      <div className="app-container">
+        <h1>RoomFix</h1>
+        <p>Maintenance Request Management System</p>
 
-        {/* HEADER */}
-
-        <h1 style={{ fontSize: 34, marginBottom: 5 }}>
-          RoomFix
-        </h1>
-
-        <p style={{ color: '#cbd5e1', marginTop: 5 }}>
-          Maintenance Request Management System
-        </p>
-
-        {/* ================================== */}
-        {/* LOGIN / REGISTRATION PAGE */}
-        {/* ================================== */}
+        {/* LOGIN / REGISTER */}
 
         {!session ? (
-
-          <section
-            className="rf-card"
-            style={{
-              ...panel,
-              maxWidth: 440,
-              margin: '25px auto'
-            }}
-          >
-
-            <h2 style={{ marginTop: 0 }}>
-              {register ? 'Register as Resident' : 'Login'}
-            </h2>
+          <section style={{ ...panel, maxWidth: 440 }}>
+            <h2>{register ? 'Register as Resident' : 'Login'}</h2>
 
             <form
               onSubmit={login}
-              style={{
-                display: 'grid',
-                gap: 14
-              }}
+              style={{ display: 'grid', gap: 13 }}
             >
-
-              {/* NAME */}
-
               {register && (
                 <input
-                  className="rf-input"
                   style={field}
                   placeholder="Full Name"
                   value={name}
@@ -335,10 +580,7 @@ export default function App() {
                 />
               )}
 
-              {/* EMAIL */}
-
               <input
-                className="rf-input"
                 style={field}
                 type="email"
                 placeholder="Email Address"
@@ -347,23 +589,11 @@ export default function App() {
                 required
               />
 
-              {/* PASSWORD WITH EYE ICON */}
-
-              <div
-                style={{
-                  position: 'relative',
-                  width: '100%'
-                }}
-              >
-
+              <div style={{ position: 'relative' }}>
                 <input
-                  className="rf-input"
-                  style={{
-                    ...field,
-                    paddingRight: 55
-                  }}
+                  style={{ ...field, paddingRight: 55 }}
                   type={showPassword ? 'text' : 'password'}
-                  placeholder="Password"
+                  placeholder="Password (8+ characters)"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   required
@@ -373,167 +603,100 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  aria-label={
-                    showPassword ? 'Hide password' : 'Show password'
-                  }
                   style={{
                     position: 'absolute',
-                    right: 12,
-                    top: '50%',
-                    transform: 'translateY(-50%)',
+                    right: 8,
+                    top: 5,
+                    padding: 7,
+                    border: 0,
                     background: 'transparent',
-                    border: 'none',
                     cursor: 'pointer',
-                    fontSize: 21,
-                    padding: 4,
-                    color: '#334155'
+                    color: '#334155',
+                    fontSize: 18
                   }}
+                  aria-label="Toggle password visibility"
                 >
-                  {showPassword ? '🙈' : '👁️'}
+                  {showPassword ? '🙈' : '👁'}
                 </button>
-
               </div>
 
-              {/* LOGIN BUTTON */}
-
               <button
-                type="submit"
-                disabled={isSubmitting}
-                className={
-                  isSubmitting
-                    ? 'login-blink'
-                    : 'rf-button'
-                }
-                style={{
-                  ...btn,
-                  width: '100%',
-                  opacity: isSubmitting ? 0.8 : 1,
-                  cursor: isSubmitting ? 'wait' : 'pointer'
-                }}
+                style={btn}
+                className={`action-btn ${isLoading('login') ? 'is-loading' : ''}`}
+                disabled={loadingAction !== null}
               >
-
-                {isSubmitting
-                  ? 'Please wait...'
-                  : register
-                    ? 'Create Account'
-                    : 'Log in'}
-
+                {isLoading('login') ? (
+                  <span className="loading-content">
+                    <span className="spinner" />
+                    Loading...
+                  </span>
+                ) : register ? 'Create Account' : 'Log in'}
               </button>
-
             </form>
-
-            {/* REGISTER BUTTON */}
 
             <button
               type="button"
-              className="rf-button"
-              disabled={isSubmitting}
-              onClick={() => {
-                setRegister(!register)
-                setMessage('')
-                setShowPassword(false)
-              }}
+              className="action-btn"
               style={{
                 ...btn,
                 background: 'transparent',
-                paddingLeft: 0,
                 marginTop: 12
               }}
+              disabled={loadingAction !== null}
+              onClick={() => {
+                setRegister(!register)
+                setMessage('')
+                setMessageType('')
+              }}
             >
-
               {register
                 ? 'Already have an account? Login'
-                : 'Register new resident'}
-
+                : 'Register New Resident'}
             </button>
-
           </section>
-
         ) : (
-
           <>
-            {/* ================================== */}
-            {/* DASHBOARD HEADER */}
-            {/* ================================== */}
+            {/* USER DASHBOARD */}
 
-            <section
-              className="rf-card"
-              style={panel}
-            >
-
-              <h2>
-                Welcome, {session.name}
-              </h2>
-
+            <section style={panel}>
+              <h2>Welcome, {session.name}</h2>
               <p>
                 Role: <b>{session.role}</b>
               </p>
 
-              <button
-                className="rf-button"
-                style={btn}
-                onClick={logout}
-              >
-                Logout
-              </button>
+              {actionButton(
+                'logout',
+                'Logout',
+                logout,
+                '#475569'
+              )}
 
               {' '}
 
-              <button
-                className="rf-button"
-                style={btn}
-                onClick={() =>
-                  refresh().catch(e =>
-                    setMessage(String(e))
-                  )
-                }
-              >
-                Refresh
-              </button>
-
+              {actionButton(
+                'refresh',
+                'Refresh',
+                () => runAction(
+                  'refresh',
+                  async () => {
+                    await refresh()
+                  },
+                  'Data Refreshed Successfully!'
+                )
+              )}
             </section>
 
-            {/* ================================== */}
-            {/* RESIDENT MAINTENANCE REQUEST FORM */}
-            {/* ================================== */}
+            {/* RESIDENT REQUEST FORM */}
 
             {session.role === 'resident' && (
-
-              <section
-                className="rf-card"
-                style={panel}
-              >
-
+              <section style={panel}>
                 <h2>Submit Maintenance Request</h2>
 
                 <form
-                  style={{
-                    display: 'grid',
-                    gap: 12
-                  }}
-
-                  onSubmit={async e => {
-                    e.preventDefault()
-
-                    await act(
-                      '/api/requests',
-                      'POST',
-                      {
-                        title,
-                        description,
-                        location,
-                        priority
-                      }
-                    )
-
-                    setTitle('')
-                    setDescription('')
-                    setLocation('')
-                  }}
+                  onSubmit={submitRequest}
+                  style={{ display: 'grid', gap: 12 }}
                 >
-
                   <input
-                    className="rf-input"
                     style={field}
                     placeholder="Request Title"
                     value={title}
@@ -543,9 +706,8 @@ export default function App() {
                   />
 
                   <textarea
-                    className="rf-input"
                     style={field}
-                    placeholder="Describe your maintenance problem"
+                    placeholder="Describe your problem"
                     value={description}
                     onChange={e => setDescription(e.target.value)}
                     required
@@ -554,7 +716,6 @@ export default function App() {
                   />
 
                   <input
-                    className="rf-input"
                     style={field}
                     placeholder="Location / Room Number"
                     value={location}
@@ -564,7 +725,6 @@ export default function App() {
                   />
 
                   <select
-                    className="rf-input"
                     style={field}
                     value={priority}
                     onChange={e => setPriority(e.target.value)}
@@ -575,27 +735,24 @@ export default function App() {
                   </select>
 
                   <button
-                    type="submit"
-                    className="rf-button"
                     style={btn}
+                    className={`action-btn ${isLoading('submit-request') ? 'is-loading' : ''}`}
+                    disabled={loadingAction !== null}
                   >
-                    Submit Request
+                    {isLoading('submit-request') ? (
+                      <span className="loading-content">
+                        <span className="spinner" />
+                        Loading...
+                      </span>
+                    ) : 'Submit Request'}
                   </button>
-
                 </form>
-
               </section>
             )}
 
-            {/* ================================== */}
-            {/* MAINTENANCE REQUEST LIST */}
-            {/* ================================== */}
+            {/* MAINTENANCE REQUESTS */}
 
-            <section
-              className="rf-card"
-              style={panel}
-            >
-
+            <section style={panel}>
               <h2>
                 {session.role === 'admin'
                   ? 'All Maintenance Requests'
@@ -605,258 +762,214 @@ export default function App() {
               </h2>
 
               {tickets.length === 0 ? (
-
                 <p>No requests yet.</p>
-
               ) : (
+                tickets.map(ticket => {
+                  const closed = [
+                    'completed',
+                    'rejected'
+                  ].includes(ticket.status)
 
-                tickets.map(t => (
+                  return (
+                    <article
+                      key={ticket.id}
+                      className="ticket-card"
+                    >
+                      <h3>
+                        #{ticket.id} — {ticket.title}
+                      </h3>
 
-                  <article
-                    key={t.id}
-                    style={{
-                      border: '1px solid #475569',
-                      borderRadius: 9,
-                      padding: 14,
-                      margin: '12px 0',
-                      background: '#0f172a'
-                    }}
-                  >
+                      <p>{ticket.description}</p>
 
-                    <h3>
-                      #{t.id} — {t.title}
-                    </h3>
+                      <p>
+                        Location: {ticket.location}
+                      </p>
 
-                    <p>{t.description}</p>
+                      <p>
+                        Priority: <b>{ticket.priority}</b>
+                      </p>
 
-                    <p>
-                      Location: {t.location}
-                    </p>
+                      <p>
+                        Status:{' '}
+                        <span style={statusStyle(ticket.status)}>
+                          {ticket.status.replace('_', ' ').toUpperCase()}
+                        </span>
+                      </p>
 
-                    <p>
-                      Priority: <b>{t.priority}</b>
-                    </p>
+                      <p>
+                        Created by user #{ticket.created_by}
+                      </p>
 
-                    <p>
-                      Status: <b>{t.status}</b>
-                    </p>
+                      <p>
+                        Assigned Staff: {ticket.assigned_staff ?? 'None'}
+                      </p>
 
-                    <p>
-                      Created by user #{t.created_by}
-                    </p>
+                      {/* ADMIN ASSIGN STAFF */}
 
-                    <p>
-                      Assigned Staff: {t.assigned_staff ?? 'None'}
-                    </p>
-
-                    {/* ADMIN ASSIGN STAFF */}
-
-                    {session.role === 'admin' && (
-
-                      <div
-                        style={{
-                          display: 'flex',
-                          gap: 8,
-                          flexWrap: 'wrap'
-                        }}
-                      >
-
-                        <select
-                          className="rf-input"
-                          style={{
-                            ...field,
-                            width: 240
-                          }}
-                          id={'staff-' + t.id}
-                          defaultValue=""
-                        >
-
-                          <option value="">
-                            Select Maintenance Staff
-                          </option>
-
-                          {staff.map(s => (
-
-                            <option
-                              key={s.id}
-                              value={s.id}
-                            >
-                              {s.name} (#{s.id})
+                      {session.role === 'admin' && !closed && (
+                        <div className="ticket-actions">
+                          <select
+                            style={{ ...field, flex: 1, minWidth: 170 }}
+                            value={selectedStaff[ticket.id] || ''}
+                            onChange={e =>
+                              setSelectedStaff(prev => ({
+                                ...prev,
+                                [ticket.id]: e.target.value
+                              }))
+                            }
+                            disabled={loadingAction !== null}
+                          >
+                            <option value="">
+                              Select Maintenance Staff
                             </option>
 
-                          ))}
+                            {staff.map(s => (
+                              <option key={s.id} value={s.id}>
+                                {s.name} (#{s.id})
+                              </option>
+                            ))}
+                          </select>
 
-                        </select>
-
-                        <button
-                          className="rf-button"
-                          style={btn}
-                          onClick={() => {
-                            const id = (
-                              document.getElementById(
-                                'staff-' + t.id
-                              ) as HTMLSelectElement
-                            ).value
-
-                            if (id) {
-                              act(
-                                `/api/requests/${t.id}/assign`,
-                                'PUT',
-                                {
-                                  staff_id: Number(id)
-                                }
-                              )
-                            }
-                          }}
-                        >
-                          Assign Staff
-                        </button>
-
-                      </div>
-                    )}
-
-                    {/* STAFF STATUS UPDATE */}
-
-                    {session.role === 'maintenance_staff' &&
-                      ['assigned', 'in_progress'].includes(t.status) && (
-
-                        <div
-                          style={{
-                            display: 'flex',
-                            gap: 8,
-                            flexWrap: 'wrap'
-                          }}
-                        >
-
-                          {(
-                            ['in_progress', 'completed', 'rejected'] as const
-                          ).map(s => (
-
-                            <button
-                              key={s}
-                              className="rf-button"
-                              style={btn}
-                              onClick={() =>
-                                act(
-                                  `/api/requests/${t.id}/status`,
-                                  'PUT',
-                                  { status: s }
-                                )
-                              }
-                            >
-                              {s.replace('_', ' ')}
-                            </button>
-
-                          ))}
-
+                          {actionButton(
+                            `assign-${ticket.id}`,
+                            'Assign Staff',
+                            () => assignStaff(ticket.id)
+                          )}
                         </div>
                       )}
 
-                  </article>
+                      {/* STAFF STATUS BUTTONS */}
 
-                ))
+                      {session.role === 'maintenance_staff' &&
+                        ['assigned', 'in_progress'].includes(ticket.status) && (
+                          <div className="ticket-actions">
+                            {(['in_progress', 'completed', 'rejected'] as const).map(s => (
+                              <ReactStatusButton
+                                key={s}
+                                status={s}
+                                loading={isLoading(`status-${ticket.id}-${s}`)}
+                                disabled={loadingAction !== null}
+                                onClick={() => updateStatus(ticket.id, s)}
+                                btnStyle={btn}
+                              />
+                            ))}
+                          </div>
+                        )}
 
+                      {closed && (
+                        <p style={{ color: '#94a3b8', fontSize: 13 }}>
+                          This request is closed.
+                        </p>
+                      )}
+                    </article>
+                  )
+                })
               )}
-
             </section>
 
-            {/* ================================== */}
             {/* ADMIN USER MANAGEMENT */}
-            {/* ================================== */}
 
             {session.role === 'admin' && (
-
-              <section
-                className="rf-card"
-                style={panel}
-              >
-
+              <section style={panel}>
                 <h2>User Management</h2>
 
-                {users.map(u => (
-
-                  <div
-                    key={u.id}
-                    style={{
-                      display: 'flex',
-                      gap: 12,
-                      alignItems: 'center',
-                      flexWrap: 'wrap',
-                      padding: 10,
-                      borderBottom: '1px solid #334155'
-                    }}
-                  >
-
-                    <span>
-                      {u.name} — {u.email} ({u.role})
-                    </span>
+                {users.map(user => (
+                  <div key={user.id} className="user-row">
+                    <div>
+                      <b>{user.name}</b>
+                      <br />
+                      <small>{user.email}</small>
+                      <br />
+                      <small>Current Role: {user.role}</small>
+                    </div>
 
                     <select
-                      className="rf-input"
-                      style={{
-                        ...field,
-                        width: 185
-                      }}
-                      value={u.role}
+                      style={{ ...field, width: 190 }}
+                      value={user.role}
+                      disabled={loadingAction !== null}
                       onChange={e =>
-                        act(
-                          `/api/users/${u.id}/role`,
-                          'PUT',
-                          { role: e.target.value }
-                        )
+                        changeRole(user.id, e.target.value)
                       }
                     >
-
                       <option value="admin">Admin</option>
-
                       <option value="resident">Resident</option>
-
                       <option value="maintenance_staff">
                         Maintenance Staff
                       </option>
 
-                      {u.role === 'manager' && (
-                        <option value="manager">
-                          Manager (legacy)
+                      {user.role === 'manager' && (
+                        <option value="manager" disabled>
+                          Manager (Legacy)
                         </option>
                       )}
-
                     </select>
-
                   </div>
-
                 ))}
-
               </section>
             )}
-
           </>
         )}
 
-        {/* ================================== */}
-        {/* SUCCESS / ERROR MESSAGE */}
-        {/* ================================== */}
+        {/* GLOBAL SUCCESS / ERROR MESSAGE */}
 
         {message && (
-
-          <p
+          <div
+            className={`feedback ${messageType}`}
             role="alert"
-            style={{
-              background: '#334155',
-              padding: 14,
-              borderRadius: 8,
-              marginTop: 18,
-              border: '1px solid #64748b',
-              overflowWrap: 'anywhere'
-            }}
+            aria-live="polite"
           >
+            {messageType === 'success' ? '✓ ' : '✕ '}
             {message}
-          </p>
-
+          </div>
         )}
-
       </div>
-
     </main>
+  )
+}
+
+// ==============================
+// STAFF STATUS BUTTON COMPONENT
+// ==============================
+
+function ReactStatusButton({
+  status,
+  loading,
+  disabled,
+  onClick,
+  btnStyle
+}: {
+  status: string
+  loading: boolean
+  disabled: boolean
+  onClick: () => void
+  btnStyle: CSSProperties
+}) {
+  const labels: Record<string, string> = {
+    in_progress: 'In Progress',
+    completed: 'Completed',
+    rejected: 'Rejected'
+  }
+
+  const colors: Record<string, string> = {
+    in_progress: '#0369a1',
+    completed: '#15803d',
+    rejected: '#b91c1c'
+  }
+
+  return (
+    <button
+      type="button"
+      className={`action-btn ${loading ? 'is-loading' : ''}`}
+      style={{ ...btnStyle, background: colors[status] }}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {loading ? (
+        <span className="loading-content">
+          <span className="spinner" />
+          Loading...
+        </span>
+      ) : labels[status]}
+    </button>
   )
 }
