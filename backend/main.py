@@ -45,6 +45,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoomFix API",
     lifespan=lifespan,
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
 )
 
 app.add_middleware(
