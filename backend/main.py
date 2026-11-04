@@ -7,14 +7,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from backend.auth import (
-    hash_password,
-    create_access_token,
-    decode_access_token,
-    verify_password,
-)
-from backend.database import get_connection, init_db, seed_db
-from backend.models import LoginRequest, User, UserRole
+try:
+    from backend.auth import (
+        hash_password,
+        create_access_token,
+        decode_access_token,
+        verify_password,
+    )
+    from backend.database import get_connection, init_db, seed_db
+    from backend.models import LoginRequest, User, UserRole
+
+except ModuleNotFoundError:
+    from auth import (
+        hash_password,
+        create_access_token,
+        decode_access_token,
+        verify_password,
+    )
+    from database import get_connection, init_db, seed_db
+    from models import LoginRequest, User, UserRole
 
 # ==========================================
 # 1. DATABASE LIFESPAN
