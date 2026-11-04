@@ -1,15 +1,35 @@
+import os
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "roomfix.db"
+# ==========================================
+# DATABASE CONFIGURATION
+# ==========================================
+
+if os.getenv("VERCEL") == "1":
+    DB_PATH = Path("/tmp/roomfix.db")
+else:
+    DB_PATH = Path(__file__).resolve().parent / "roomfix.db"
+
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(
+        str(DB_PATH),
+        timeout=30
+    )
     conn.row_factory = sqlite3.Row
     return conn
 
+
+# ==========================================
+# INITIALIZE DATABASE
+# ==========================================
+
 def init_db():
     conn = get_connection()
+
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -29,25 +49,44 @@ def init_db():
             )
         """)
 
-        conn.execute("""CREATE TABLE IF NOT EXISTS maintenance_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL, description TEXT NOT NULL, location TEXT NOT NULL,
-            priority TEXT NOT NULL CHECK(priority IN ('low','medium','high')),
-            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','assigned','in_progress','completed','rejected')),
-            created_by INTEGER NOT NULL REFERENCES users(id),
-            assigned_staff INTEGER REFERENCES users(id),
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )""")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS maintenance_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                location TEXT NOT NULL,
+                priority TEXT NOT NULL
+                    CHECK(priority IN ('low','medium','high')),
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN (
+                        'pending','assigned','in_progress',
+                        'completed','rejected'
+                    )),
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                assigned_staff INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
+
     finally:
         conn.close()
 
 
+# ==========================================
+# SEED DATABASE
+# ==========================================
+
 def seed_db():
-    from backend.auth import hash_password
+    try:
+        from backend.auth import hash_password
+    except ModuleNotFoundError:
+        from auth import hash_password
 
     conn = get_connection()
+
     try:
         users = [
             ("Admin User", "admin@roomfix.com", "admin123", "admin"),
@@ -58,23 +97,34 @@ def seed_db():
 
         for name, email, password, role in users:
             existing = conn.execute(
-                "SELECT id FROM users WHERE email = ?", (email,)
+                "SELECT id FROM users WHERE email = ?",
+                (email,)
             ).fetchone()
 
             if existing is None:
                 conn.execute(
-                    "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
+                    """
+                    INSERT INTO users (name, email, password, role)
+                    VALUES (?, ?, ?, ?)
+                    """,
                     (name, email, hash_password(password), role)
                 )
 
-        rooms = [("101", "available"), ("102", "occupied")]
+        rooms = [
+            ("101", "available"),
+            ("102", "occupied")
+        ]
 
         for room_number, status in rooms:
             conn.execute(
-                "INSERT OR IGNORE INTO rooms (room_number, status) VALUES (?, ?)",
+                """
+                INSERT OR IGNORE INTO rooms (room_number, status)
+                VALUES (?, ?)
+                """,
                 (room_number, status)
             )
 
         conn.commit()
+
     finally:
-        conn.close()        
+        conn.close()
