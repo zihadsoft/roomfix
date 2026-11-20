@@ -1,5 +1,9 @@
 from contextlib import asynccontextmanager
-from sqlite3 import IntegrityError
+from sqlite3 import IntegrityError as SQLiteIntegrityError
+
+from psycopg import IntegrityError as PostgresIntegrityError
+
+IntegrityError = (SQLiteIntegrityError, PostgresIntegrityError)
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
