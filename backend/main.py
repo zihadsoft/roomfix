@@ -1,5 +1,9 @@
 from contextlib import asynccontextmanager
-from sqlite3 import IntegrityError
+from sqlite3 import IntegrityError as SQLiteIntegrityError
+
+from psycopg import IntegrityError as PostgresIntegrityError
+
+IntegrityError = (SQLiteIntegrityError, PostgresIntegrityError)
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -9,9 +13,9 @@ from pydantic import BaseModel, Field
 
 try:
     from backend.auth import (
-        hash_password,
         create_access_token,
         decode_access_token,
+        hash_password,
         verify_password,
     )
     from backend.database import get_connection, init_db, seed_db
@@ -19,9 +23,9 @@ try:
 
 except ModuleNotFoundError:
     from auth import (
-        hash_password,
         create_access_token,
         decode_access_token,
+        hash_password,
         verify_password,
     )
     from database import get_connection, init_db, seed_db
@@ -203,22 +207,19 @@ def login(data: LoginRequest):
 
 @app.get("/api/users", response_model=list[User])
 def get_users(payload: CurrentUser):
-    if payload.get("role") != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Admin access required",
-        )
+    role = payload.get("role")
+    if role not in ("admin", "moderator"):
+        raise HTTPException(status_code=403, detail="Admin or Moderator access required")
 
     conn = get_connection()
 
     try:
-        rows = conn.execute(
-            """
-            SELECT id, name, email, role
-            FROM users
-            ORDER BY id
-            """
-        ).fetchall()
+        if role == "admin":
+            rows = conn.execute("SELECT id, name, email, role FROM users ORDER BY id").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, name, email, role FROM users WHERE role='maintenance_staff' ORDER BY id"
+            ).fetchall()
 
         return [
             User(
@@ -270,7 +271,7 @@ def admin_only(payload: CurrentUser):
 
 @app.get("/api/management")
 def management_access(payload: CurrentUser):
-    if payload.get("role") not in ["admin", "manager"]:
+    if payload.get("role") not in ["admin", "manager", "moderator"]:
         raise HTTPException(
             status_code=403,
             detail="Manager or Admin access required",
@@ -291,6 +292,7 @@ def resident_access(payload: CurrentUser):
     if payload.get("role") not in [
         "admin",
         "manager",
+        "moderator",
         "resident",
     ]:
         raise HTTPException(
@@ -342,6 +344,15 @@ ManagementUser = Annotated[
     dict,
     Depends(require_management),
 ]
+
+
+def require_admin_or_moderator(payload: CurrentUser):
+    if payload.get("role") not in ("admin", "moderator"):
+        raise HTTPException(status_code=403, detail="Admin or Moderator access required")
+    return payload
+
+
+AdminOrModerator = Annotated[dict, Depends(require_admin_or_moderator)]
 
 
 # ==========================================
@@ -559,6 +570,7 @@ class AssignInput(BaseModel):
 
 class StatusInput(BaseModel):
     status: RequestStatus
+    rejection_reason: str | None = Field(default=None, min_length=5, max_length=500)
 
 
 def request_row(conn, request_id):
@@ -587,12 +599,12 @@ def create_request(data: RequestCreate, payload: CurrentUser):
 def list_requests(payload: CurrentUser):
     conn = get_connection()
     try:
-        if payload["role"] == "admin":
-            rows = conn.execute("SELECT * FROM maintenance_requests ORDER BY id DESC").fetchall()
+        if payload["role"] in ("admin", "moderator", "manager"):
+            rows = conn.execute("SELECT * FROM maintenance_requests WHERE is_deleted=0 ORDER BY id DESC").fetchall()
         elif payload["role"] == "maintenance_staff":
-            rows = conn.execute("SELECT * FROM maintenance_requests WHERE assigned_staff=? ORDER BY id DESC", (payload["user_id"],)).fetchall()
+            rows = conn.execute("SELECT * FROM maintenance_requests WHERE assigned_staff=? AND is_deleted=0 ORDER BY id DESC", (payload["user_id"],)).fetchall()
         elif payload["role"] == "resident":
-            rows = conn.execute("SELECT * FROM maintenance_requests WHERE created_by=? ORDER BY id DESC", (payload["user_id"],)).fetchall()
+            rows = conn.execute("SELECT * FROM maintenance_requests WHERE created_by=? AND is_deleted=0 ORDER BY id DESC", (payload["user_id"],)).fetchall()
         else:
             raise HTTPException(status_code=403, detail="Role not permitted")
         return [dict(row) for row in rows]
@@ -602,28 +614,36 @@ def list_requests(payload: CurrentUser):
 
 @app.get("/api/staff")
 def list_staff(payload: CurrentUser):
-    if payload["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin required")
+    if payload["role"] not in ("admin", "moderator", "manager"):
+        raise HTTPException(status_code=403, detail="Management access required")
     conn = get_connection()
     try:
-        return [dict(x) for x in conn.execute("SELECT id,name,email FROM users WHERE role='maintenance_staff'").fetchall()]
+        return [dict(x) for x in conn.execute("SELECT id,name,email,role FROM users WHERE role='maintenance_staff' ORDER BY id").fetchall()]
     finally:
         conn.close()
 
 
 @app.put("/api/requests/{request_id}/assign")
-def assign_request(request_id: int, data: AssignInput, payload: CurrentUser):
-    if payload["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin required")
+def assign_request(request_id: int, data: AssignInput, payload: AdminOrModerator):
     conn = get_connection()
     try:
         row = request_row(conn, request_id)
-        if row["status"] in ("completed", "rejected"):
-            raise HTTPException(status_code=409, detail="Cannot assign closed request")
+        if row["is_deleted"]:
+            raise HTTPException(status_code=404, detail="Request not found")
+        if row["status"] == "completed":
+            raise HTTPException(status_code=409, detail="Cannot assign completed request")
+        if payload["role"] == "moderator" and row["status"] != "rejected":
+            raise HTTPException(status_code=403, detail="Moderator can only reassign rejected requests")
         staff = conn.execute("SELECT id FROM users WHERE id=? AND role='maintenance_staff'", (data.staff_id,)).fetchone()
         if staff is None:
             raise HTTPException(status_code=422, detail="Valid maintenance staff required")
-        conn.execute("UPDATE maintenance_requests SET assigned_staff=?, status='assigned', updated_at=CURRENT_TIMESTAMP WHERE id=?", (data.staff_id, request_id))
+        previous_staff = row["assigned_staff"]
+        action = "reassigned" if row["status"] == "rejected" else "assigned"
+        conn.execute("UPDATE maintenance_requests SET assigned_staff=?, status='assigned', rejection_reason=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (data.staff_id, request_id))
+        conn.execute(
+            "INSERT INTO assignment_history (request_id, from_staff, to_staff, assigned_by, action, note) VALUES (?,?,?,?,?,?)",
+            (request_id, previous_staff, data.staff_id, payload["user_id"], action, "Reassigned after staff rejection" if action == "reassigned" else None),
+        )
         conn.commit()
         return dict(request_row(conn, request_id))
     finally:
@@ -641,7 +661,17 @@ def update_request_status(request_id: int, data: StatusInput, payload: CurrentUs
             raise HTTPException(status_code=403, detail="Not assigned to you")
         if row["status"] not in ("assigned", "in_progress") or data.status not in ("in_progress", "completed", "rejected"):
             raise HTTPException(status_code=409, detail="Invalid status transition")
-        conn.execute("UPDATE maintenance_requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (data.status, request_id))
+        reason = None
+        if data.status == "rejected":
+            reason = (data.rejection_reason or "").strip()
+            if len(reason) < 5:
+                raise HTTPException(status_code=422, detail="A rejection reason of at least 5 characters is required")
+        conn.execute("UPDATE maintenance_requests SET status=?, rejection_reason=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (data.status, reason, request_id))
+        if data.status == "rejected":
+            conn.execute(
+                "INSERT INTO assignment_history (request_id, from_staff, to_staff, assigned_by, action, note) VALUES (?,?,?,?,?,?)",
+                (request_id, payload["user_id"], payload["user_id"], payload["user_id"], "rejected", reason),
+            )
         conn.commit()
         return dict(request_row(conn, request_id))
     finally:
@@ -649,7 +679,7 @@ def update_request_status(request_id: int, data: StatusInput, payload: CurrentUs
 
 
 class UserRoleUpdate(BaseModel):
-    role: Literal["admin", "resident", "maintenance_staff"]
+    role: Literal["admin", "moderator", "resident", "maintenance_staff"]
 
 
 @app.put("/api/users/{user_id}/role")
@@ -665,5 +695,128 @@ def change_user_role(user_id: int, data: UserRoleUpdate, payload: CurrentUser):
             raise HTTPException(status_code=404, detail="User not found")
         conn.commit()
         return {"id": user_id, "role": data.role}
+    finally:
+        conn.close()
+
+
+class AdminUserCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+    role: Literal["moderator", "maintenance_staff", "resident"]
+
+
+@app.post("/api/admin/users", status_code=201)
+def create_managed_user(data: AdminUserCreate, payload: CurrentUser):
+    if payload["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin required")
+    email = data.email.strip().lower()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="Valid email required")
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO users (name,email,password,role) VALUES (?,?,?,?)",
+            (data.name.strip(), email, hash_password(data.password), data.role),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid, "name": data.name.strip(), "email": email, "role": data.role}
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Email already registered") from exc
+    finally:
+        conn.close()
+
+
+@app.get("/api/requests/{request_id}/history")
+def get_request_history(request_id: int, payload: AdminOrModerator):
+    conn = get_connection()
+    try:
+        request_row(conn, request_id)
+        rows = conn.execute(
+            """SELECT h.id, h.request_id, h.from_staff, h.to_staff, h.assigned_by,
+                      h.action, h.note, h.created_at,
+                      fs.name AS from_staff_name, ts.name AS to_staff_name,
+                      au.name AS actor_name
+               FROM assignment_history h
+               LEFT JOIN users fs ON fs.id=h.from_staff
+               LEFT JOIN users ts ON ts.id=h.to_staff
+               LEFT JOIN users au ON au.id=h.assigned_by
+               WHERE h.request_id=? ORDER BY h.id DESC""",
+            (request_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+@app.get("/api/moderator/activity")
+def moderator_activity(payload: CurrentUser):
+    if payload["role"] not in ("admin", "moderator"):
+        raise HTTPException(status_code=403, detail="Moderator access required")
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT h.*, r.title AS request_title, u.name AS staff_name
+               FROM assignment_history h
+               LEFT JOIN maintenance_requests r ON r.id=h.request_id
+               LEFT JOIN users u ON u.id=h.to_staff
+               ORDER BY h.id DESC LIMIT 200"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+# Soft-delete / recycle bin. Admin-only moderation endpoints.
+@app.delete("/api/requests/{request_id}")
+def delete_request(request_id: int, payload: CurrentUser):
+    if payload["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin required")
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT id FROM maintenance_requests WHERE id=? AND is_deleted=0", (request_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Request not found")
+        conn.execute("UPDATE maintenance_requests SET is_deleted=1, deleted_at=CURRENT_TIMESTAMP, deleted_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (payload["user_id"], request_id))
+        conn.commit()
+        return {"message": "Request moved to recycle bin", "id": request_id}
+    finally:
+        conn.close()
+
+@app.get("/api/admin/recycle-bin")
+def list_recycle_bin(payload: CurrentUser):
+    if payload["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin required")
+    conn = get_connection()
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM maintenance_requests WHERE is_deleted=1 ORDER BY deleted_at DESC").fetchall()]
+    finally:
+        conn.close()
+
+@app.post("/api/admin/recycle-bin/{request_id}/restore")
+def restore_request(request_id: int, payload: CurrentUser):
+    if payload["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin required")
+    conn = get_connection()
+    try:
+        cur = conn.execute("UPDATE maintenance_requests SET is_deleted=0, deleted_at=NULL, deleted_by=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=? AND is_deleted=1", (request_id,))
+        if not cur.rowcount:
+            raise HTTPException(status_code=404, detail="Deleted request not found")
+        conn.commit()
+        return {"message": "Request restored", "id": request_id}
+    finally:
+        conn.close()
+
+@app.delete("/api/admin/recycle-bin/{request_id}/permanent")
+def permanently_delete_request(request_id: int, payload: CurrentUser):
+    if payload["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin required")
+    conn = get_connection()
+    try:
+        cur = conn.execute("DELETE FROM maintenance_requests WHERE id=? AND is_deleted=1", (request_id,))
+        if not cur.rowcount:
+            raise HTTPException(status_code=404, detail="Deleted request not found")
+        conn.commit()
+        return {"message": "Request permanently deleted", "id": request_id}
     finally:
         conn.close()

@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta, timezone
-
 import os
+from datetime import UTC, datetime, timedelta
+
 import jwt
 from pwdlib import PasswordHash
 
@@ -21,11 +21,11 @@ def verify_password(password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(
+    expire = datetime.now(UTC) + timedelta(
         minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def decode_access_token(token: str) -> dict:
-    return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])   
+    return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])

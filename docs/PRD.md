@@ -12,10 +12,18 @@ Students and residents often report maintenance problems through informal commun
 ## 4. User Roles
 
 ### Admin
-- Manage users
+- Manage users and staff accounts
 - View all maintenance requests
 - Assign requests to maintenance staff
+- Delete requests to the Recycle Bin and restore them
 - Update and manage request information
+
+### Moderator
+- Monitor staff activity and rejected requests
+- Review rejection reasons
+- Reassign rejected requests to another maintenance staff member
+- View assignment and reassignment history
+- Cannot delete requests or manage Admin accounts
 
 ### Resident/Student
 - Create maintenance requests

@@ -1,72 +1,74 @@
-# FastAPI + React Template
+# RoomFix — Maintenance Request Management System
 
-FastAPI backend + Vite/React/TypeScript frontend, deployed to Vercel as one project.
+RoomFix is a React + TypeScript frontend with a FastAPI backend and SQLite local database.
+It supports Admin, Moderator, Resident, and multiple Maintenance Staff accounts.
 
+## Main features
+
+- Resident registration, login, and maintenance request submission.
+- Role-based request visibility.
+- Admin assignment and Admin-only request deletion to the Recycle Bin.
+- Admin Dashboard Recycle Bin list, restore, and permanent-delete actions.
+- Maintenance Staff status updates; a rejection reason is required when rejecting.
+- Moderator review of requests and staff activity.
+- Moderator reassignment of rejected requests to another Maintenance Staff member.
+- Assignment/rejection history.
+- Multiple staff accounts and responsive dashboard UI.
+
+## Local setup (Windows PowerShell)
+
+### 1. Backend
+
+From the project root:
+
+```powershell
+python -m venv backend/.venv
+backend/.venv/Scripts/Activate.ps1
+pip install -r backend/requirements.txt
+python -m uvicorn backend.main:app --reload --port 8000
 ```
-backend/    FastAPI app (routes under /api)
-frontend/   Vite + React + TypeScript
-vercel.json Vercel setup: /api/* goes to backend, everything else to frontend
-```
 
-## Requirements
+API documentation: http://localhost:8000/api/docs
 
-- [Python](https://www.python.org/downloads/) 3.10+
-- [Node.js](https://nodejs.org/) 22+
+### 2. Frontend
 
-> On macOS/Linux, use `python3` instead of `python`.
+Open a second terminal:
 
-## Run locally
-
-**Backend** (terminal 1):
-
-```bash
-cd backend
-python -m venv .venv
-.venv\Scripts\Activate.ps1      # macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-fastapi dev main.py
-```
-
-**Frontend** (terminal 2):
-
-```bash
+```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Open http://localhost:5173 and click **Say hello**. Vite forwards `/api` requests to the backend on port 8000.
+Open http://localhost:5173.
 
-To run it the way Vercel does instead, from the project root:
+The Vite development server proxies `/api` requests to `http://localhost:8000`.
 
-```bash
-npm install -g vercel
-vercel dev -L
-```
+## Local demo accounts
 
-> Add new Python packages to `backend/requirements.txt`.
+The backend seeds these accounts if their email addresses do not already exist:
 
-## Class exercise
+| Role | Email | Local demo password |
+|---|---|---|
+| Admin | admin@roomfix.com | admin123 |
+| Moderator | moderator@roomfix.com | moderator123 |
+| Resident | resident@roomfix.com | resident123 |
+| Maintenance Staff 1 | staff@roomfix.com | staff123 |
+| Maintenance Staff 2 | staff2@roomfix.com | staff2123 |
 
-Send an ID, name and email from React to FastAPI and show the reply.
+These are local coursework/demo credentials only. Change passwords and configure a strong `ROOMFIX_SECRET_KEY` before any shared deployment. Do not commit real credentials or `.env` files.
 
-1. In `backend/main.py`, uncomment the `EXERCISE (part 1)` block. Try `POST /api/user` at http://localhost:8000/docs.
-2. In `frontend/src/App.tsx`, uncomment `<UserForm />` and the `UserForm` function (`EXERCISE (part 2)`).
-3. Fill in the form at http://localhost:5173 and click **Send**.
+## Role permissions
 
-Try an invalid email (send it from `/docs`, since the browser blocks it in the form): FastAPI returns `422` without any extra code.
+- **Admin:** view all active requests, assign staff, manage roles, delete requests to the Recycle Bin, restore, and permanently delete.
+- **Moderator:** view active requests and staff activity; reassign rejected requests only. Cannot delete requests or manage Admin accounts.
+- **Maintenance Staff:** view assigned requests and update status. Rejection requires a reason.
+- **Resident:** create and view only their own requests.
 
-## Deploy to Vercel
+## Database notes
 
-1. Push the repo to GitHub.
-2. Go to https://vercel.com/new, import the repo and click **Deploy**. Keep **Root Directory** as `./`.
+SQLite is used for local development. Startup performs additive migrations for the Recycle Bin and assignment-history tables and seeds missing demo accounts without deleting existing users or requests. Back up `backend/roomfix.db` before replacing project files or running migrations on an important database.
 
-Every push to `main` redeploys automatically. Or deploy from your machine with `vercel --prod`.
+## Production deployment warning
 
-## Troubleshooting
-
-- **"Running scripts is disabled" in PowerShell:** run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
-- **`fastapi` not found:** activate the virtual environment first.
-- **`Request failed: 500` in the app:** the backend isn't running.
-- **App at localhost:8000 shows an old version:** delete `frontend/dist`.
-- **Vercel build fails:** check **Build Logs** in the Vercel dashboard, and make sure `npm run build` works in `frontend/`.
+This version is **not ready for Vercel production deployment**. The active backend uses SQLite and intentionally blocks startup on Vercel or when `DATABASE_URL` is configured. A persistent PostgreSQL adapter, production database migrations, and production secrets must be implemented and configured before deploying. The local feature tests do not verify a live Vercel deployment.

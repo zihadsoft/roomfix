@@ -5,7 +5,8 @@ from pydantic import BaseModel
 
 class UserRole(str, Enum):
     admin = "admin"
-    manager = "manager"
+    manager = "manager"  # legacy management role
+    moderator = "moderator"
     resident = "resident"
     maintenance_staff = "maintenance_staff"
 

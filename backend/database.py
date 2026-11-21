@@ -1,78 +1,356 @@
 import os
+import re
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
+
+import psycopg
+from psycopg.rows import dict_row
 
 # ==========================================
 # DATABASE CONFIGURATION
 # ==========================================
 
-if os.getenv("VERCEL") == "1":
-    DB_PATH = Path("/tmp/roomfix.db")
-else:
-    DB_PATH = Path(__file__).resolve().parent / "roomfix.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+USE_POSTGRES = bool(DATABASE_URL)
 
+DB_PATH = Path(
+    os.getenv(
+        "ROOMFIX_DB_PATH",
+        str(Path(__file__).resolve().parent / "roomfix.db")
+    )
+)
+
+if os.getenv("VERCEL") == "1" and not USE_POSTGRES:
+    raise RuntimeError(
+        "DATABASE_URL is required on Vercel. "
+        "SQLite is not suitable for persistent Vercel storage."
+    )
+
+
+# ==========================================
+# POSTGRESQL COMPATIBILITY LAYER
+# ==========================================
+
+class PostgresCursor:
+    def __init__(self, cursor, lastrowid=None):
+        self.cursor = cursor
+        self.lastrowid = lastrowid
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+    @property
+    def rowcount(self):
+        return self.cursor.rowcount
+
+    def __iter__(self):
+        return iter(self.cursor)
+
+
+class PostgresConnection:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def execute(self, query, params=None):
+        sql = query.strip()
+        sql = sql.replace("?", "%s")
+
+        # SQLite-specific INSERT OR IGNORE
+        if re.match(
+            r"^INSERT\s+OR\s+IGNORE\s+INTO",
+            sql,
+            re.IGNORECASE
+        ):
+            sql = re.sub(
+                r"^INSERT\s+OR\s+IGNORE\s+INTO",
+                "INSERT INTO",
+                sql,
+                count=1,
+                flags=re.IGNORECASE
+            )
+            sql += " ON CONFLICT DO NOTHING"
+
+        is_insert = bool(
+            re.match(r"^INSERT\s+INTO", sql, re.IGNORECASE)
+        )
+
+        if is_insert and "RETURNING" not in sql.upper():
+            sql += " RETURNING id"
+
+        cursor = self.connection.execute(
+            sql,
+            params if params is not None else ()
+        )
+
+        lastrowid = None
+
+        if is_insert and cursor.description:
+            result = cursor.fetchone()
+            if result:
+                lastrowid = result["id"]
+
+        return PostgresCursor(cursor, lastrowid)
+
+    def commit(self):
+        self.connection.commit()
+
+    def rollback(self):
+        self.connection.rollback()
+
+    def close(self):
+        self.connection.close()
+
+
+# ==========================================
+# DATABASE CONNECTION
+# ==========================================
 
 def get_connection():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if DATABASE_URL:
+        conn = psycopg.connect(
+            conninfo=DATABASE_URL,
+            row_factory=cast(Any, dict_row),
+            connect_timeout=15
+        )
+        return PostgresConnection(conn)
+
+    DB_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
     conn = sqlite3.connect(
         str(DB_PATH),
         timeout=30
     )
+    
+    conn.execute("PRAGMA foreign_keys = ON")
+    
     conn.row_factory = sqlite3.Row
     return conn
 
 
 # ==========================================
-# INITIALIZE DATABASE
+# DATABASE INITIALIZATION
 # ==========================================
 
 def init_db():
     conn = get_connection()
 
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS rooms (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                room_number TEXT UNIQUE NOT NULL,
-                status TEXT NOT NULL DEFAULT 'available'
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS maintenance_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL,
-                location TEXT NOT NULL,
-                priority TEXT NOT NULL
-                    CHECK(priority IN ('low','medium','high')),
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN (
-                        'pending','assigned','in_progress',
-                        'completed','rejected'
-                    )),
-                created_by INTEGER NOT NULL REFERENCES users(id),
-                assigned_staff INTEGER REFERENCES users(id),
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        if USE_POSTGRES:
+            initialize_postgres(conn)
+        else:
+            initialize_sqlite(conn)
 
         conn.commit()
 
+    except Exception:
+        conn.rollback()
+        raise
+
     finally:
         conn.close()
+
+
+# ==========================================
+# POSTGRESQL TABLES
+# ==========================================
+
+def initialize_postgres(conn):
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY
+                PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rooms (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY
+                PRIMARY KEY,
+            room_number TEXT UNIQUE NOT NULL,
+            status TEXT NOT NULL DEFAULT 'available'
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS maintenance_requests (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY
+                PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            location TEXT NOT NULL,
+            priority TEXT NOT NULL
+                CHECK (
+                    priority IN ('low', 'medium', 'high')
+                ),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (
+                    status IN (
+                        'pending',
+                        'assigned',
+                        'in_progress',
+                        'completed',
+                        'rejected'
+                    )
+                ),
+            created_by INTEGER NOT NULL
+                REFERENCES users(id),
+            assigned_staff INTEGER
+                REFERENCES users(id),
+            rejection_reason TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT,
+            deleted_by INTEGER REFERENCES users(id),
+            created_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS assignment_history (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY
+                PRIMARY KEY,
+            request_id INTEGER NOT NULL
+                REFERENCES maintenance_requests(id)
+                ON DELETE CASCADE,
+            from_staff INTEGER REFERENCES users(id),
+            to_staff INTEGER NOT NULL REFERENCES users(id),
+            assigned_by INTEGER NOT NULL REFERENCES users(id),
+            action TEXT NOT NULL DEFAULT 'assigned',
+            note TEXT,
+            created_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Add columns for older PostgreSQL schemas.
+    conn.execute("""
+        ALTER TABLE maintenance_requests
+        ADD COLUMN IF NOT EXISTS rejection_reason TEXT
+    """)
+
+    conn.execute("""
+        ALTER TABLE maintenance_requests
+        ADD COLUMN IF NOT EXISTS
+        is_deleted INTEGER NOT NULL DEFAULT 0
+    """)
+
+    conn.execute("""
+        ALTER TABLE maintenance_requests
+        ADD COLUMN IF NOT EXISTS deleted_at TEXT
+    """)
+
+    conn.execute("""
+        ALTER TABLE maintenance_requests
+        ADD COLUMN IF NOT EXISTS
+        deleted_by INTEGER REFERENCES users(id)
+    """)
+
+
+# ==========================================
+# SQLITE TABLES
+# ==========================================
+
+def initialize_sqlite(conn):
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rooms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_number TEXT UNIQUE NOT NULL,
+            status TEXT NOT NULL DEFAULT 'available'
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS maintenance_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            location TEXT NOT NULL,
+            priority TEXT NOT NULL
+                CHECK (
+                    priority IN ('low','medium','high')
+                ),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (
+                    status IN (
+                        'pending','assigned','in_progress',
+                        'completed','rejected'
+                    )
+                ),
+            created_by INTEGER NOT NULL
+                REFERENCES users(id),
+            assigned_staff INTEGER REFERENCES users(id),
+            rejection_reason TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT,
+            deleted_by INTEGER REFERENCES users(id),
+            created_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS assignment_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL
+                REFERENCES maintenance_requests(id)
+                ON DELETE CASCADE,
+            from_staff INTEGER REFERENCES users(id),
+            to_staff INTEGER NOT NULL REFERENCES users(id),
+            assigned_by INTEGER NOT NULL REFERENCES users(id),
+            action TEXT NOT NULL DEFAULT 'assigned',
+            note TEXT,
+            created_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    columns = {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(maintenance_requests)"
+        ).fetchall()
+    }
+
+    migrations = {
+        "rejection_reason": "TEXT",
+        "is_deleted": "INTEGER NOT NULL DEFAULT 0",
+        "deleted_at": "TEXT",
+        "deleted_by": "INTEGER REFERENCES users(id)"
+    }
+
+    for name, definition in migrations.items():
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE maintenance_requests "
+                f"ADD COLUMN {name} {definition}"
+            )
 
 
 # ==========================================
@@ -80,22 +358,61 @@ def init_db():
 # ==========================================
 
 def seed_db():
+
     try:
         from backend.auth import hash_password
     except ModuleNotFoundError:
         from auth import hash_password
 
+    # Do not create publicly known demo passwords
+    # in the production database.
+    if USE_POSTGRES:
+        return
+
     conn = get_connection()
 
     try:
         users = [
-            ("Admin User", "admin@roomfix.com", "admin123", "admin"),
-            ("Manager User", "manager@roomfix.com", "manager123", "manager"),
-            ("Resident User", "resident@roomfix.com", "resident123", "resident"),
-            ("Maintenance Staff", "staff@roomfix.com", "staff123", "maintenance_staff"),
+            (
+                "Admin User",
+                "admin@roomfix.com",
+                "admin123",
+                "admin"
+            ),
+            (
+                "Manager User",
+                "manager@roomfix.com",
+                "manager123",
+                "manager"
+            ),
+            (
+                "Resident User",
+                "resident@roomfix.com",
+                "resident123",
+                "resident"
+            ),
+            (
+                "Maintenance Staff",
+                "staff@roomfix.com",
+                "staff123",
+                "maintenance_staff"
+            ),
+            (
+                "Moderator User",
+                "moderator@roomfix.com",
+                "moderator123",
+                "moderator"
+            ),
+            (
+                "Maintenance Staff 2",
+                "staff2@roomfix.com",
+                "staff2123",
+                "maintenance_staff"
+            )
         ]
 
         for name, email, password, role in users:
+
             existing = conn.execute(
                 "SELECT id FROM users WHERE email = ?",
                 (email,)
@@ -104,10 +421,16 @@ def seed_db():
             if existing is None:
                 conn.execute(
                     """
-                    INSERT INTO users (name, email, password, role)
+                    INSERT INTO users
+                    (name, email, password, role)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (name, email, hash_password(password), role)
+                    (
+                        name,
+                        email,
+                        hash_password(password),
+                        role
+                    )
                 )
 
         rooms = [
@@ -118,13 +441,18 @@ def seed_db():
         for room_number, status in rooms:
             conn.execute(
                 """
-                INSERT OR IGNORE INTO rooms (room_number, status)
+                INSERT OR IGNORE INTO rooms
+                (room_number, status)
                 VALUES (?, ?)
                 """,
                 (room_number, status)
             )
 
         conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
 
     finally:
         conn.close()

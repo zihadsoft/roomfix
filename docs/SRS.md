@@ -12,8 +12,9 @@ RoomFix will support user authentication, maintenance request creation, request 
 The system will have three main user roles:
 
 - Admin
+- Moderator
 - Resident/Student
-- Maintenance Staff
+- Maintenance Staff (multiple accounts supported)
 
 ## 2. Functional Requirements
 
@@ -46,6 +47,18 @@ The system shall restrict features and resources according to the user's assigne
 
 ### FR-10: Permission-Based Access
 The system shall use specific permissions or security scopes to control access to protected API endpoints.
+
+### FR-11: Admin-Only Request Deletion
+Only Admin users shall be able to move maintenance requests to the Recycle Bin, restore them, or permanently delete them.
+
+### FR-12: Moderator Review and Reassignment
+Moderators shall view staff activity and rejected requests, and may reassign rejected requests to another maintenance staff member. Moderators shall not delete requests or manage Admin accounts.
+
+### FR-13: Rejection Reason and Assignment History
+Maintenance staff shall provide a reason when rejecting a request. The system shall retain assignment, rejection, and reassignment history for review.
+
+### FR-14: Multiple Maintenance Staff Accounts
+The system shall support multiple maintenance staff accounts and allow eligible staff members to receive assigned or reassigned requests.
 
 ## 3. Non-Functional Requirements
 

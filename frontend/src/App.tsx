@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type CSSProperties } from 'react'
+import { useEffect, useState, type FormEvent, type CSSProperties } from 'react'
 
 const API = import.meta.env.VITE_API_URL || window.location.origin
 
@@ -17,6 +17,7 @@ type Ticket = {
   status: string
   created_by: number
   assigned_staff: number | null
+  rejection_reason?: string | null
 }
 
 type Staff = {
@@ -32,8 +33,44 @@ type Person = {
   role: string
 }
 
+type Activity = {
+  id: number
+  request_id: number
+  request_title?: string
+  action: string
+  note?: string | null
+  staff_name?: string | null
+  created_at: string
+}
+
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null)
+  const [session, setSession] = useState<Session | null>(() => {
+    try {
+      const saved = localStorage.getItem('roomfix.session')
+      return saved ? JSON.parse(saved) as Session : null
+    } catch {
+      localStorage.removeItem('roomfix.session')
+      return null
+    }
+  })
+
+  // Preserve the current login across a browser refresh. The server remains
+  // authoritative and rejects an expired/invalid access token.
+  useEffect(() => {
+    if (session) localStorage.setItem('roomfix.session', JSON.stringify(session))
+    else localStorage.removeItem('roomfix.session')
+  }, [session])
+
+  useEffect(() => {
+    if (!session) return
+    refresh(session.access_token, session.role).catch(() => {
+      setSession(null)
+      setMessage('Your session expired. Please log in again.')
+      setMessageType('error')
+    })
+    // Restore once when the app mounts; refresh is intentionally not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -43,8 +80,10 @@ export default function App() {
   const [register, setRegister] = useState(false)
 
   const [tickets, setTickets] = useState<Ticket[]>([])
+  const [deletedTickets, setDeletedTickets] = useState<Ticket[]>([])
   const [staff, setStaff] = useState<Staff[]>([])
   const [users, setUsers] = useState<Person[]>([])
+  const [activity, setActivity] = useState<Activity[]>([])
 
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState('')
@@ -104,13 +143,31 @@ export default function App() {
     setTickets(data)
 
     if (role === 'admin') {
-      const [staffData, userData] = await Promise.all([
+      const [staffData, userData, activityData, deletedData] = await Promise.all([
         request('/api/staff', 'GET', undefined, token),
-        request('/api/users', 'GET', undefined, token)
+        request('/api/users', 'GET', undefined, token),
+        request('/api/moderator/activity', 'GET', undefined, token),
+        request('/api/admin/recycle-bin', 'GET', undefined, token)
       ])
-
       setStaff(staffData)
       setUsers(userData)
+      setActivity(activityData)
+      setDeletedTickets(deletedData)
+    } else if (role === 'moderator') {
+      const [staffData, userData, activityData] = await Promise.all([
+        request('/api/staff', 'GET', undefined, token),
+        request('/api/users', 'GET', undefined, token),
+        request('/api/moderator/activity', 'GET', undefined, token)
+      ])
+      setStaff(staffData)
+      setUsers(userData)
+      setActivity(activityData)
+      setDeletedTickets([])
+    } else {
+      setStaff([])
+      setUsers([])
+      setActivity([])
+      setDeletedTickets([])
     }
   }
 
@@ -198,8 +255,10 @@ export default function App() {
     void runAction('logout', async () => {
       setSession(null)
       setTickets([])
+      setDeletedTickets([])
       setStaff([])
       setUsers([])
+      setActivity([])
       setPassword('')
     }, 'Logged Out Successfully!')
   }
@@ -264,19 +323,55 @@ export default function App() {
   // ==============================
 
   async function updateStatus(ticketId: number, status: string) {
+    let rejection_reason: string | undefined
+    if (status === 'rejected') {
+      const entered = window.prompt('Please provide a reason for rejecting this request (at least 5 characters):')
+      if (entered === null) return
+      rejection_reason = entered.trim()
+      if (rejection_reason.length < 5) {
+        setMessage('A rejection reason of at least 5 characters is required.')
+        setMessageType('error')
+        return
+      }
+    }
     await runAction(
       `status-${ticketId}-${status}`,
       async () => {
         await request(
           `/api/requests/${ticketId}/status`,
           'PUT',
-          { status }
+          { status, ...(rejection_reason ? { rejection_reason } : {}) }
         )
-
         await refresh()
       },
       `Request Status Updated Successfully!`
     )
+  }
+
+  async function deleteRequest(ticketId: number) {
+    if (session?.role !== 'admin') return
+    if (!window.confirm(`Move request #${ticketId} to the Recycle Bin?`)) return
+    await runAction(`delete-${ticketId}`, async () => {
+      await request(`/api/requests/${ticketId}`, 'DELETE')
+      await refresh()
+    }, 'Request moved to Recycle Bin.')
+  }
+
+  async function restoreRequest(ticketId: number) {
+    if (session?.role !== 'admin') return
+    await runAction(`restore-${ticketId}`, async () => {
+      await request(`/api/admin/recycle-bin/${ticketId}/restore`, 'POST')
+      await refresh()
+    }, 'Request restored successfully.')
+  }
+
+  async function permanentlyDeleteRequest(ticketId: number) {
+    if (session?.role !== 'admin') return
+    if (!window.confirm(`Permanently delete request #${ticketId}? This cannot be undone.`)) return
+    await runAction(`permanent-${ticketId}`, async () => {
+      await request(`/api/admin/recycle-bin/${ticketId}/permanent`, 'DELETE')
+      await refresh()
+    }, 'Request permanently deleted.')
   }
 
   // ==============================
@@ -306,9 +401,9 @@ export default function App() {
   const field: CSSProperties = {
     padding: 12,
     borderRadius: 8,
-    border: '1px solid #64748b',
+    border: '1px solid #dbe3ef',
     background: '#ffffff',
-    color: '#111827',
+    color: '#172238',
     width: '100%',
     boxSizing: 'border-box',
     fontSize: 15
@@ -316,10 +411,10 @@ export default function App() {
 
   const btn: CSSProperties = {
     padding: '12px 18px',
-    background: '#2563eb',
+    background: 'linear-gradient(135deg, #315ee8, #2448c5)',
     color: '#ffffff',
     border: 0,
-    borderRadius: 8,
+    borderRadius: 10,
     cursor: 'pointer',
     fontWeight: 700,
     fontSize: 14,
@@ -327,11 +422,13 @@ export default function App() {
   }
 
   const panel: CSSProperties = {
-    background: '#1e293b',
-    padding: 20,
-    borderRadius: 14,
-    margin: '16px 0',
-    border: '1px solid #334155'
+    background: '#ffffff',
+    color: '#172238',
+    padding: 24,
+    borderRadius: 18,
+    margin: '18px 0',
+    border: '1px solid #e5eaf2',
+    boxShadow: '0 12px 34px rgba(24, 42, 76, 0.06)'
   }
 
   // ==============================
@@ -408,15 +505,15 @@ export default function App() {
         }
 
         .app-main {
-          background: #0f172a;
-          color: white;
+          background: radial-gradient(circle at 10% 0%, #eaf0ff 0, transparent 28%), #f4f6fb;
+          color: #172238;
           min-height: 100vh;
-          font-family: Arial, sans-serif;
-          padding: 25px 16px;
+          font-family: 'DM Sans', Inter, Arial, sans-serif;
+          padding: 32px 20px 56px;
         }
 
         .app-container {
-          max-width: 950px;
+          max-width: 1180px;
           margin: auto;
         }
 
@@ -442,18 +539,8 @@ export default function App() {
         }
 
         .action-btn.is-loading {
-          animation: buttonBlink 0.7s infinite;
-        }
-
-        @keyframes buttonBlink {
-          0%, 100% {
-            opacity: 1;
-            filter: brightness(1);
-          }
-          50% {
-            opacity: 0.55;
-            filter: brightness(1.5);
-          }
+          cursor: progress;
+          box-shadow: 0 0 0 3px rgba(49, 94, 232, .12);
         }
 
         .loading-content {
@@ -510,14 +597,28 @@ export default function App() {
         }
 
         .ticket-card {
-          background: #0f172a;
-          border: 1px solid #475569;
-          border-radius: 12px;
-          padding: 17px;
+          background: #fbfcff;
+          color: #25324a;
+          border: 1px solid #e3e9f3;
+          border-radius: 15px;
+          padding: 20px;
           margin: 14px 0;
           overflow-wrap: anywhere;
+          box-shadow: 0 5px 18px rgba(25, 45, 80, .04);
         }
 
+        .app-container > h1 { color: #14213a; font-size: 32px; letter-spacing: -.04em; margin: 0 0 4px; }
+        .app-container > p { color: #748098; margin: 0 0 22px; }
+        .app-main h2 { color: #172744; margin-top: 0; }
+        .app-main h3 { color: #1d2d49; }
+        .app-main p, .app-main small { color: #65728a; }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+        .stat-card { background: #fff; border: 1px solid #e5eaf2; border-radius: 15px; padding: 18px; box-shadow: 0 8px 24px rgba(24,42,76,.045); }
+        .stat-card span { display: block; color: #738099; font-size: 12px; font-weight: 700; }
+        .stat-card strong { display: block; margin-top: 8px; color: #172744; font-size: 27px; letter-spacing: -.04em; }
+        .rejection-note { padding: 10px 12px; border-radius: 10px; background: #fff5f5; border: 1px solid #fed7d7; color: #9b2525 !important; }
+        @media (max-width: 760px) { .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (max-width: 420px) { .stats-grid { grid-template-columns: 1fr 1fr; gap: 8px; } .stat-card { padding: 13px; } }
         .ticket-actions {
           display: flex;
           gap: 9px;
@@ -527,7 +628,7 @@ export default function App() {
 
         .user-row {
           padding: 12px 5px;
-          border-bottom: 1px solid #475569;
+          border-bottom: 1px solid #e5eaf2;
           display: flex;
           gap: 12px;
           align-items: center;
@@ -661,7 +762,7 @@ export default function App() {
             <section style={panel}>
               <h2>Welcome, {session.name}</h2>
               <p>
-                Role: <b>{session.role}</b>
+                Role: <b>{session.role === 'moderator' ? 'Moderator' : session.role === 'maintenance_staff' ? 'Maintenance Staff' : session.role}</b>
               </p>
 
               {actionButton(
@@ -684,6 +785,13 @@ export default function App() {
                   'Data Refreshed Successfully!'
                 )
               )}
+            </section>
+
+            <section className="stats-grid" aria-label="Request summary">
+              <div className="stat-card"><span>Visible Requests</span><strong>{tickets.length}</strong></div>
+              <div className="stat-card"><span>Pending</span><strong>{tickets.filter(t => t.status === 'pending').length}</strong></div>
+              <div className="stat-card"><span>In Progress</span><strong>{tickets.filter(t => t.status === 'in_progress').length}</strong></div>
+              <div className="stat-card"><span>Completed</span><strong>{tickets.filter(t => t.status === 'completed').length}</strong></div>
             </section>
 
             {/* RESIDENT REQUEST FORM */}
@@ -756,9 +864,11 @@ export default function App() {
               <h2>
                 {session.role === 'admin'
                   ? 'All Maintenance Requests'
-                  : session.role === 'maintenance_staff'
-                    ? 'My Assigned Requests'
-                    : 'My Maintenance Requests'}
+                  : session.role === 'moderator'
+                    ? 'Requests Requiring Moderation'
+                    : session.role === 'maintenance_staff'
+                      ? 'My Assigned Requests'
+                      : 'My Maintenance Requests'}
               </h2>
 
               {tickets.length === 0 ? (
@@ -803,10 +913,13 @@ export default function App() {
                       <p>
                         Assigned Staff: {ticket.assigned_staff ?? 'None'}
                       </p>
+                      {ticket.status === 'rejected' && ticket.rejection_reason && (
+                        <p className="rejection-note"><b>Rejection reason:</b> {ticket.rejection_reason}</p>
+                      )}
 
                       {/* ADMIN ASSIGN STAFF */}
 
-                      {session.role === 'admin' && !closed && (
+                      {(session.role === 'admin' && !closed) || (session.role === 'moderator' && ticket.status === 'rejected') ? (
                         <div className="ticket-actions">
                           <select
                             style={{ ...field, flex: 1, minWidth: 170 }}
@@ -835,6 +948,12 @@ export default function App() {
                             'Assign Staff',
                             () => assignStaff(ticket.id)
                           )}
+                        </div>
+                      ) : null}
+
+                      {session.role === 'admin' && (
+                        <div className="ticket-actions">
+                          {actionButton(`delete-${ticket.id}`, 'Move to Recycle Bin', () => deleteRequest(ticket.id), '#b42318')}
                         </div>
                       )}
 
@@ -867,11 +986,28 @@ export default function App() {
               )}
             </section>
 
+            {session.role === 'moderator' && (
+              <section style={panel}>
+                <h2>Staff Activity & Reassignment History</h2>
+                {activity.length === 0 ? <p>No staff activity recorded yet.</p> : activity.map(item => (
+                  <div key={item.id} className="user-row">
+                    <div>
+                      <b>Request #{item.request_id}: {item.request_title || 'Maintenance request'}</b>
+                      <br />
+                      <small>{item.action.toUpperCase()} · {item.staff_name || 'Staff'} · {item.created_at}</small>
+                      {item.note && <p>{item.note}</p>}
+                    </div>
+                  </div>
+                ))}
+              </section>
+            )}
+
             {/* ADMIN USER MANAGEMENT */}
 
             {session.role === 'admin' && (
               <section style={panel}>
                 <h2>User Management</h2>
+                <p>Moderator and second maintenance staff demo accounts are created automatically for local development.</p>
 
                 {users.map(user => (
                   <div key={user.id} className="user-row">
@@ -892,6 +1028,7 @@ export default function App() {
                       }
                     >
                       <option value="admin">Admin</option>
+                      <option value="moderator">Moderator</option>
                       <option value="resident">Resident</option>
                       <option value="maintenance_staff">
                         Maintenance Staff
@@ -904,6 +1041,22 @@ export default function App() {
                       )}
                     </select>
                   </div>
+                ))}
+              </section>
+            )}
+
+            {session.role === 'admin' && (
+              <section style={panel}>
+                <h2>Recycle Bin</h2>
+                {deletedTickets.length === 0 ? <p>No deleted requests.</p> : deletedTickets.map(ticket => (
+                  <article key={ticket.id} className="ticket-card">
+                    <h3>#{ticket.id} — {ticket.title}</h3>
+                    <p>{ticket.location} · {ticket.priority} priority</p>
+                    <div className="ticket-actions">
+                      {actionButton(`restore-${ticket.id}`, 'Restore', () => restoreRequest(ticket.id), '#15803d')}
+                      {actionButton(`permanent-${ticket.id}`, 'Delete Permanently', () => permanentlyDeleteRequest(ticket.id), '#991b1b')}
+                    </div>
+                  </article>
                 ))}
               </section>
             )}
